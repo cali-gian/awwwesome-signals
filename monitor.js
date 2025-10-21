@@ -1,15 +1,16 @@
 /**
- * 🚀 Binance Trading Monitor con Indicatori Tecnici
+ * 🚀 Binance Trading Monitor con Indicatori Tecnici + Discord Integration
  *
  * COME ESEGUIRE:
  * 1. npm install
- * 2. node monitor.js
+ * 2. Configura i webhook Discord (vedi DISCORD_WEBHOOKS)
+ * 3. node monitor.js
  *
  * PARAMETRI CONFIGURABILI:
- * - SYMBOLS: array di simboli da monitorare (riga 25)
- * - WEBHOOK_URL: endpoint n8n per ricevere gli alert (riga 20)
- * - REFRESH_INTERVAL_MS: frequenza di aggiornamento in millisecondi (riga 22)
- * - MAX_REQUESTS_PER_MINUTE: limite rate per API Binance (riga 23)
+ * - DISCORD_WEBHOOKS: webhook Discord per ogni timeframe (riga 21)
+ * - SYMBOLS: array di simboli da monitorare (riga 34)
+ * - REFRESH_INTERVAL_MS: frequenza di aggiornamento in millisecondi (riga 31)
+ * - MAX_REQUESTS_PER_MINUTE: limite rate per API Binance (riga 32)
  */
 
 import axios from 'axios';
@@ -17,11 +18,23 @@ import { EMA, SMA, RSI } from 'technicalindicators';
 
 // ==================== CONFIGURAZIONE ====================
 
-const WEBHOOK_URL = 'https://your-n8n-instance.com/webhook/trading-signals';
+// Webhook Discord - UN WEBHOOK PER OGNI TIMEFRAME
+const DISCORD_WEBHOOKS = {
+  '5m': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_5M/YOUR_WEBHOOK_TOKEN_5M',
+  '15m': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_15M/YOUR_WEBHOOK_TOKEN_15M',
+  '30m': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_30M/YOUR_WEBHOOK_TOKEN_30M',
+  '37m': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_37M/YOUR_WEBHOOK_TOKEN_37M',
+  '1h': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_1H/YOUR_WEBHOOK_TOKEN_1H',
+  '2h': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_2H/YOUR_WEBHOOK_TOKEN_2H',
+  '3h': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_3H/YOUR_WEBHOOK_TOKEN_3H',
+  '1d': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_1D/YOUR_WEBHOOK_TOKEN_1D'
+};
+
 const BINANCE_API = 'https://api.binance.com/api/v3/klines';
 const REFRESH_INTERVAL_MS = 10000; // 10 secondi
 const MAX_REQUESTS_PER_MINUTE = 1200;
 const CANDLES_LIMIT = 50;
+const TIMEFRAMES = Object.keys(DISCORD_WEBHOOKS);
 
 // Lista di 100+ simboli popolari su Binance
 const SYMBOLS = [
@@ -79,14 +92,14 @@ function sleep(ms) {
 
 // ==================== FETCH CANDLES ====================
 
-async function fetchCandles(symbol) {
+async function fetchCandles(symbol, interval) {
   try {
     await waitForRateLimit();
 
     const response = await axios.get(BINANCE_API, {
       params: {
         symbol: symbol,
-        interval: '1m',
+        interval: interval,
         limit: CANDLES_LIMIT
       },
       timeout: 5000
@@ -105,7 +118,7 @@ async function fetchCandles(symbol) {
 
     return candles;
   } catch (error) {
-    console.error(`❌ Errore fetch ${symbol}:`, error.message);
+    console.error(`❌ Errore fetch ${symbol} ${interval}:`, error.message);
     return null;
   }
 }
@@ -170,7 +183,7 @@ function calculateIndicators(candles) {
 
 // ==================== RILEVAZIONE SEGNALI ====================
 
-function detectSignals(symbol, indicators) {
+function detectSignals(symbol, interval, indicators) {
   if (!indicators || !indicators.ema4 || !indicators.ema8 ||
       !indicators.ema4Prev || !indicators.ema8Prev) {
     return null;
@@ -193,52 +206,112 @@ function detectSignals(symbol, indicators) {
   }
 
   // Controllo se è un segnale nuovo (evita duplicati)
-  const lastSignal = lastSignalState[symbol];
+  // Usa chiave composta symbol+interval
+  const stateKey = `${symbol}_${interval}`;
+  const lastSignal = lastSignalState[stateKey];
 
   if (signal && signal !== lastSignal) {
-    lastSignalState[symbol] = signal;
+    lastSignalState[stateKey] = signal;
     return signal;
   }
 
   return null;
 }
 
-// ==================== INVIO ALERT ====================
+// ==================== INVIO ALERT DISCORD ====================
 
-async function sendAlert(symbol, event, indicators) {
+async function sendDiscordAlert(symbol, interval, event, indicators) {
+  const webhookUrl = DISCORD_WEBHOOKS[interval];
+
+  if (!webhookUrl) {
+    console.error(`❌ Webhook non configurato per timeframe ${interval}`);
+    return;
+  }
+
+  // Formattazione valori
+  const price = parseFloat(indicators.price.toFixed(2));
+  const ema4 = parseFloat(indicators.ema4.toFixed(2));
+  const ema8 = parseFloat(indicators.ema8.toFixed(2));
+  const sma22 = indicators.sma22 ? parseFloat(indicators.sma22.toFixed(2)) : null;
+  const rsi14 = indicators.rsi14 ? parseFloat(indicators.rsi14.toFixed(2)) : null;
+
+  // Colore e emoji in base al tipo di segnale
+  const isLong = event === 'SETUP_LONG';
+  const color = isLong ? 5763719 : 15548997; // verde per LONG, rosso per SHORT
+  const emoji = isLong ? '🟢' : '🔴';
+  const title = isLong ? '🟢 SETUP LONG' : '🔴 SETUP SHORT';
+
+  // Formattazione prezzo con separatore migliaia
+  const priceFormatted = `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Costruzione embed Discord
+  const embed = {
+    title: title,
+    description: `**${symbol}** detected on **${interval}** timeframe`,
+    color: color,
+    fields: [
+      {
+        name: '💰 Price',
+        value: priceFormatted,
+        inline: true
+      },
+      {
+        name: '📊 RSI',
+        value: rsi14 ? rsi14.toString() : 'N/A',
+        inline: true
+      },
+      {
+        name: '\u200b', // Campo vuoto per layout
+        value: '\u200b',
+        inline: true
+      },
+      {
+        name: '📈 EMA4',
+        value: ema4.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        inline: true
+      },
+      {
+        name: '📉 EMA8',
+        value: ema8.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        inline: true
+      },
+      {
+        name: '📊 SMA22',
+        value: sma22 ? sma22.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : 'N/A',
+        inline: true
+      }
+    ],
+    timestamp: new Date().toISOString(),
+    footer: {
+      text: 'Binance Trading Monitor'
+    }
+  };
+
   const payload = {
-    symbol: symbol,
-    interval: '1m',
-    event: event,
-    price: parseFloat(indicators.price.toFixed(2)),
-    ema4: parseFloat(indicators.ema4.toFixed(2)),
-    ema8: parseFloat(indicators.ema8.toFixed(2)),
-    sma22: indicators.sma22 ? parseFloat(indicators.sma22.toFixed(2)) : null,
-    rsi14: indicators.rsi14 ? parseFloat(indicators.rsi14.toFixed(2)) : null,
-    time: indicators.time
+    embeds: [embed]
   };
 
   try {
-    await axios.post(WEBHOOK_URL, payload, {
+    await axios.post(webhookUrl, payload, {
       headers: { 'Content-Type': 'application/json' },
       timeout: 5000
     });
 
     const timestamp = new Date().toTimeString().split(' ')[0];
-    const rsiStr = payload.rsi14 ? `RSI ${payload.rsi14}` : 'RSI N/A';
+    const rsiStr = rsi14 ? `RSI ${rsi14}` : 'RSI N/A';
 
-    console.log(`[${timestamp}] 🔔 ${symbol} → ${event} @ ${payload.price} (${rsiStr})`);
+    console.log(`[${timestamp}] ${emoji} ${symbol} (${interval}) → ${event} @ ${priceFormatted} (${rsiStr})`);
   } catch (error) {
-    console.error(`❌ Errore invio webhook per ${symbol}:`, error.message);
+    console.error(`❌ Errore invio Discord webhook ${symbol} ${interval}:`, error.message);
   }
 }
 
-// ==================== ANALISI SINGOLO SIMBOLO ====================
+// ==================== ANALISI SINGOLO SIMBOLO SU UN TIMEFRAME ====================
 
-async function analyzeSymbol(symbol) {
+async function analyzeSymbol(symbol, interval) {
   try {
     // 1. Scarica le candele
-    const candles = await fetchCandles(symbol);
+    const candles = await fetchCandles(symbol, interval);
     if (!candles || candles.length < CANDLES_LIMIT) {
       return;
     }
@@ -250,30 +323,37 @@ async function analyzeSymbol(symbol) {
     }
 
     // 3. Rileva segnali
-    const signal = detectSignals(symbol, indicators);
+    const signal = detectSignals(symbol, interval, indicators);
 
-    // 4. Invia alert se c'è un nuovo segnale
+    // 4. Invia alert Discord se c'è un nuovo segnale
     if (signal) {
-      await sendAlert(symbol, signal, indicators);
+      await sendDiscordAlert(symbol, interval, signal, indicators);
     }
 
   } catch (error) {
-    console.error(`❌ Errore analisi ${symbol}:`, error.message);
+    console.error(`❌ Errore analisi ${symbol} ${interval}:`, error.message);
   }
 }
 
 // ==================== LOOP PRINCIPALE ====================
 
 async function monitorAllSymbols() {
-  console.log(`\n🔄 Scansione di ${SYMBOLS.length} simboli...`);
+  const totalCombinations = SYMBOLS.length * TIMEFRAMES.length;
+  console.log(`\n🔄 Scansione di ${SYMBOLS.length} simboli su ${TIMEFRAMES.length} timeframes (${totalCombinations} combinazioni)...`);
 
   const startTime = Date.now();
 
-  // Usa Promise.allSettled per gestire tutti i simboli in parallelo
+  // Crea array di tutte le combinazioni symbol + timeframe
+  const tasks = [];
+  for (const symbol of SYMBOLS) {
+    for (const interval of TIMEFRAMES) {
+      tasks.push(analyzeSymbol(symbol, interval));
+    }
+  }
+
+  // Usa Promise.allSettled per gestire tutte le combinazioni in parallelo
   // senza che un errore blocchi gli altri
-  const results = await Promise.allSettled(
-    SYMBOLS.map(symbol => analyzeSymbol(symbol))
-  );
+  const results = await Promise.allSettled(tasks);
 
   const failed = results.filter(r => r.status === 'rejected').length;
   const elapsed = Date.now() - startTime;
@@ -282,11 +362,14 @@ async function monitorAllSymbols() {
 }
 
 async function startMonitoring() {
-  console.log('🚀 Binance Trading Monitor avviato!');
-  console.log(`📊 Monitoraggio di ${SYMBOLS.length} simboli`);
+  console.log('🚀 Binance Trading Monitor + Discord Integration');
+  console.log('─'.repeat(60));
+  console.log(`📊 Simboli: ${SYMBOLS.length}`);
+  console.log(`⏰ Timeframes: ${TIMEFRAMES.join(', ')}`);
+  console.log(`🔔 Canali Discord configurati: ${TIMEFRAMES.length}`);
   console.log(`⏱️  Intervallo di aggiornamento: ${REFRESH_INTERVAL_MS / 1000}s`);
-  console.log(`🌐 Webhook: ${WEBHOOK_URL}`);
   console.log(`📈 Indicatori: EMA4, EMA8, SMA22, RSI14`);
+  console.log(`🎯 Segnali: SETUP_LONG (EMA4 > EMA8), SETUP_SHORT (EMA4 < EMA8)`);
   console.log('─'.repeat(60));
 
   // Inizializza il rate limiter
