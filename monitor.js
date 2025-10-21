@@ -31,9 +31,25 @@ const DISCORD_WEBHOOKS = {
 };
 
 const BINANCE_API = 'https://api.binance.com/api/v3/klines';
-const REFRESH_INTERVAL_MS = 10000; // 10 secondi
-const MAX_REQUESTS_PER_MINUTE = 1200;
 const CANDLES_LIMIT = 50;
+const MAX_REQUESTS_PER_MINUTE = 1200;
+
+// Intervallo base del loop principale (quanto spesso controllare cosa aggiornare)
+const LOOP_INTERVAL_MS = 30000; // 30 secondi
+
+// Intervallo di refresh per ogni timeframe (in millisecondi)
+// Ogni timeframe viene aggiornato alla frequenza appropriata
+const TIMEFRAME_INTERVALS = {
+  '5m': 2 * 60 * 1000,      // 2 minuti - timeframe veloce
+  '15m': 5 * 60 * 1000,     // 5 minuti
+  '30m': 10 * 60 * 1000,    // 10 minuti
+  '37m': 10 * 60 * 1000,    // 10 minuti
+  '1h': 20 * 60 * 1000,     // 20 minuti
+  '2h': 30 * 60 * 1000,     // 30 minuti
+  '3h': 60 * 60 * 1000,     // 1 ora
+  '1d': 2 * 60 * 60 * 1000  // 2 ore - timeframe lento
+};
+
 const TIMEFRAMES = Object.keys(DISCORD_WEBHOOKS);
 
 // Lista di 100+ simboli popolari su Binance
@@ -65,6 +81,14 @@ const SYMBOLS = [
 
 // Salva l'ultimo stato di ogni simbolo per evitare alert duplicati
 const lastSignalState = {};
+
+// Traccia l'ultimo aggiornamento per ogni timeframe
+const lastUpdateTime = {};
+
+// Inizializza lastUpdateTime (tutti i timeframes partono da 0 = aggiorna subito)
+TIMEFRAMES.forEach(tf => {
+  lastUpdateTime[tf] = 0;
+});
 
 // Rate limiter
 let requestCount = 0;
@@ -338,15 +362,30 @@ async function analyzeSymbol(symbol, interval) {
 // ==================== LOOP PRINCIPALE ====================
 
 async function monitorAllSymbols() {
-  const totalCombinations = SYMBOLS.length * TIMEFRAMES.length;
-  console.log(`\n🔄 Scansione di ${SYMBOLS.length} simboli su ${TIMEFRAMES.length} timeframes (${totalCombinations} combinazioni)...`);
+  const now = Date.now();
+
+  // Determina quali timeframes devono essere aggiornati in questo ciclo
+  const timeframesToUpdate = TIMEFRAMES.filter(interval => {
+    const timeSinceLastUpdate = now - lastUpdateTime[interval];
+    const shouldUpdate = timeSinceLastUpdate >= TIMEFRAME_INTERVALS[interval];
+    return shouldUpdate;
+  });
+
+  if (timeframesToUpdate.length === 0) {
+    console.log('⏭️  Nessun timeframe da aggiornare in questo ciclo');
+    return;
+  }
+
+  const totalCombinations = SYMBOLS.length * timeframesToUpdate.length;
+  console.log(`\n🔄 Scansione di ${SYMBOLS.length} simboli su ${timeframesToUpdate.length} timeframes: [${timeframesToUpdate.join(', ')}]`);
+  console.log(`   (${totalCombinations} combinazioni)`);
 
   const startTime = Date.now();
 
-  // Crea array di tutte le combinazioni symbol + timeframe
+  // Crea array di tutte le combinazioni symbol + timeframe (solo per i timeframes da aggiornare)
   const tasks = [];
   for (const symbol of SYMBOLS) {
-    for (const interval of TIMEFRAMES) {
+    for (const interval of timeframesToUpdate) {
       tasks.push(analyzeSymbol(symbol, interval));
     }
   }
@@ -358,7 +397,33 @@ async function monitorAllSymbols() {
   const failed = results.filter(r => r.status === 'rejected').length;
   const elapsed = Date.now() - startTime;
 
+  // Aggiorna i timestamp per i timeframes processati
+  timeframesToUpdate.forEach(interval => {
+    lastUpdateTime[interval] = now;
+  });
+
   console.log(`✅ Scansione completata in ${elapsed}ms (${failed} errori)`);
+
+  // Mostra prossimi aggiornamenti
+  showNextUpdates();
+}
+
+// Funzione helper per mostrare quando sarà il prossimo aggiornamento per ogni timeframe
+function showNextUpdates() {
+  const now = Date.now();
+  console.log('\n📅 Prossimi aggiornamenti:');
+
+  TIMEFRAMES.forEach(interval => {
+    const timeSinceLastUpdate = now - lastUpdateTime[interval];
+    const timeUntilNext = TIMEFRAME_INTERVALS[interval] - timeSinceLastUpdate;
+    const minutesUntilNext = Math.ceil(timeUntilNext / 60000);
+
+    if (minutesUntilNext <= 0) {
+      console.log(`   ${interval.padEnd(4)} → Pronto ora`);
+    } else {
+      console.log(`   ${interval.padEnd(4)} → tra ${minutesUntilNext} minuti`);
+    }
+  });
 }
 
 async function startMonitoring() {
@@ -367,9 +432,14 @@ async function startMonitoring() {
   console.log(`📊 Simboli: ${SYMBOLS.length}`);
   console.log(`⏰ Timeframes: ${TIMEFRAMES.join(', ')}`);
   console.log(`🔔 Canali Discord configurati: ${TIMEFRAMES.length}`);
-  console.log(`⏱️  Intervallo di aggiornamento: ${REFRESH_INTERVAL_MS / 1000}s`);
+  console.log(`⏱️  Intervallo loop principale: ${LOOP_INTERVAL_MS / 1000}s`);
   console.log(`📈 Indicatori: EMA4, EMA8, SMA22, RSI14`);
   console.log(`🎯 Segnali: SETUP_LONG (EMA4 > EMA8), SETUP_SHORT (EMA4 < EMA8)`);
+  console.log('\n📅 Intervalli di refresh per timeframe:');
+  TIMEFRAMES.forEach(tf => {
+    const minutes = TIMEFRAME_INTERVALS[tf] / 60000;
+    console.log(`   ${tf.padEnd(4)} → ogni ${minutes} minuti`);
+  });
   console.log('─'.repeat(60));
 
   // Inizializza il rate limiter
@@ -384,7 +454,7 @@ async function startMonitoring() {
     }
 
     // Attendi prima del prossimo ciclo
-    await sleep(REFRESH_INTERVAL_MS);
+    await sleep(LOOP_INTERVAL_MS);
   }
 }
 

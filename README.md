@@ -6,13 +6,25 @@ Sistema automatico di monitoraggio trading per Binance con rilevazione segnali b
 
 - **Monitoraggio multi-asset**: Traccia 100+ criptovalute simultaneamente
 - **Multi-timeframe**: Supporta 5m, 15m, 30m, 37m, 1h, 2h, 3h, 1d
+- **Scheduling intelligente**: Ogni timeframe si aggiorna alla frequenza appropriata
 - **Canali Discord dedicati**: Un webhook Discord per ogni timeframe
 - **Indicatori tecnici**: EMA4, EMA8, SMA22, RSI14
 - **Rilevazione crossover**: Identifica automaticamente SETUP_LONG e SETUP_SHORT
 - **Alert Discord formattati**: Messaggi Discord embed belli e leggibili
-- **Rate limiting**: Rispetta i limiti API di Binance (1200 req/min)
+- **Rate limiting ottimizzato**: ~100 req/min invece di 4,848 req/min!
 - **Gestione errori**: Continua a funzionare anche in caso di errori di rete
 - **No duplicati**: Sistema intelligente per evitare alert ripetuti per timeframe
+
+### 🚀 Caratteristica Principale: Scheduling Intelligente
+
+**Il problema:** Ogni simbolo su ogni timeframe richiede una chiamata API separata a Binance. Con 100 simboli e 8 timeframes, servirebbero 800 richieste ogni ciclo - **impossibile rispettare i limiti API!**
+
+**La soluzione:** Invece di aggiornare tutti i timeframes contemporaneamente, il sistema aggiorna ogni timeframe solo quando necessario:
+- Timeframe 5m → ogni 2 minuti (veloce, reagisce subito)
+- Timeframe 1h → ogni 20 minuti (lento, non serve aggiornarlo spesso)
+- Timeframe 1d → ogni 2 ore (molto lento)
+
+Questo riduce le richieste API da **~4,848/min a ~100/min** rimanendo entro i limiti Binance! ✅
 
 ## 🔧 Installazione
 
@@ -73,11 +85,20 @@ const DISCORD_WEBHOOKS = {
   '1d': 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID_1D/YOUR_WEBHOOK_TOKEN_1D'
 };
 
-// Intervallo di aggiornamento (millisecondi)
-const REFRESH_INTERVAL_MS = 10000; // 10 secondi
+// Intervallo del loop principale (quanto spesso controllare cosa aggiornare)
+const LOOP_INTERVAL_MS = 30000; // 30 secondi
 
-// Limite rate richieste API
-const MAX_REQUESTS_PER_MINUTE = 1200;
+// Intervalli di refresh per ogni timeframe
+const TIMEFRAME_INTERVALS = {
+  '5m': 2 * 60 * 1000,      // 2 minuti
+  '15m': 5 * 60 * 1000,     // 5 minuti
+  '30m': 10 * 60 * 1000,    // 10 minuti
+  '37m': 10 * 60 * 1000,    // 10 minuti
+  '1h': 20 * 60 * 1000,     // 20 minuti
+  '2h': 30 * 60 * 1000,     // 30 minuti
+  '3h': 60 * 60 * 1000,     // 1 ora
+  '1d': 2 * 60 * 60 * 1000  // 2 ore
+};
 
 // Lista simboli da monitorare
 const SYMBOLS = [
@@ -90,10 +111,11 @@ const SYMBOLS = [
 | Parametro | Descrizione | Default | Raccomandato |
 |-----------|-------------|---------|--------------|
 | `DISCORD_WEBHOOKS` | Webhook Discord per timeframe | N/A | Configura tutti i timeframes |
-| `REFRESH_INTERVAL_MS` | Frequenza scansione (ms) | 10000 | 10000-30000 |
+| `LOOP_INTERVAL_MS` | Frequenza loop principale (ms) | 30000 | 30000 (30 secondi) |
+| `TIMEFRAME_INTERVALS` | Refresh rate per ogni timeframe | Vedi sopra | Personalizza in base alle necessità |
 | `MAX_REQUESTS_PER_MINUTE` | Limite rate Binance | 1200 | 1200 (max safe) |
 | `CANDLES_LIMIT` | Numero candele da scaricare | 50 | 50-100 |
-| `SYMBOLS` | Array simboli da tracciare | 100+ | Personalizza |
+| `SYMBOLS` | Array simboli da tracciare | 101 | Personalizza |
 
 ## 📊 Formato Alert Discord
 
@@ -132,31 +154,57 @@ Binance Trading Monitor • 20:45:30
 
 ## 🎯 Come Funziona
 
-1. **Fetch dati**: Scarica le ultime 50 candele da Binance per ogni simbolo su ogni timeframe
-2. **Calcolo indicatori**: Calcola EMA4, EMA8, SMA22, RSI14 su ogni asset per ogni timeframe
+### Sistema di Scheduling Intelligente
+
+Il bot utilizza un **sistema di refresh differenziato**: ogni timeframe viene aggiornato alla frequenza appropriata, evitando richieste inutili e rispettando i limiti API di Binance.
+
+**Perché?** Non ha senso controllare il grafico 1D ogni 30 secondi! Ogni timeframe ha la sua velocità naturale:
+
+- **5m**: Si aggiorna ogni **2 minuti** (timeframe veloce)
+- **15m**: Si aggiorna ogni **5 minuti**
+- **30m**: Si aggiorna ogni **10 minuti**
+- **1h**: Si aggiorna ogni **20 minuti**
+- **2h**: Si aggiorna ogni **30 minuti**
+- **3h**: Si aggiorna ogni **1 ora**
+- **1d**: Si aggiorna ogni **2 ore** (timeframe lento)
+
+### Flow di Esecuzione
+
+```
+Loop Principale (ogni 30 secondi):
+  │
+  ├─ Controlla quali timeframes devono essere aggiornati
+  │  (in base al tempo trascorso dall'ultimo update)
+  │
+  ├─ Esempio Ciclo 1 (t=0):
+  │  └─ Aggiorna TUTTI i timeframes (primo run)
+  │     └─ 101 simboli × 8 timeframes = 808 richieste
+  │
+  ├─ Esempio Ciclo 2 (t=30s):
+  │  └─ Nessun timeframe da aggiornare (troppo presto)
+  │
+  ├─ Esempio Ciclo 3 (t=2min):
+  │  └─ Aggiorna solo 5m
+  │     └─ 101 simboli × 1 timeframe = 101 richieste
+  │
+  ├─ Esempio Ciclo 4 (t=5min):
+  │  └─ Aggiorna 5m + 15m
+  │     └─ 101 simboli × 2 timeframes = 202 richieste
+  │
+  └─ E così via...
+```
+
+### Processo per Ogni Combinazione Symbol+Timeframe
+
+1. **Fetch dati**: Scarica le ultime 50 candele da Binance
+2. **Calcolo indicatori**: Calcola EMA4, EMA8, SMA22, RSI14
 3. **Rilevazione crossover**: Confronta EMA4 ed EMA8 per trovare incroci
-4. **Invio alert Discord**: Quando trova un nuovo segnale, invia un embed Discord al canale specifico del timeframe
-5. **Loop**: Ripete il processo ogni `REFRESH_INTERVAL_MS`
-
-### Esempio Flow
-
-```
-Simbolo: BTCUSDT
-  ├─ 5m  → Scarica candele → Calcola indicatori → Rileva crossover → Alert Discord #signals-5m
-  ├─ 15m → Scarica candele → Calcola indicatori → Rileva crossover → Alert Discord #signals-15m
-  ├─ 30m → Scarica candele → Calcola indicatori → (nessun segnale)
-  ├─ 37m → Scarica candele → Calcola indicatori → (nessun segnale)
-  ├─ 1h  → Scarica candele → Calcola indicatori → Rileva crossover → Alert Discord #signals-1h
-  ├─ 2h  → Scarica candele → Calcola indicatori → (nessun segnale)
-  ├─ 3h  → Scarica candele → Calcola indicatori → (nessun segnale)
-  └─ 1d  → Scarica candele → Calcola indicatori → (nessun segnale)
-
-Ripeti per ETHUSDT, BNBUSDT, ... (101 simboli)
-```
+4. **Invio alert Discord**: Se trova un nuovo segnale, invia un embed Discord al canale specifico del timeframe
+5. **State tracking**: Salva lo stato per evitare duplicati
 
 ## 📝 Log Output
 
-Il programma stampa log chiari nella console:
+Il programma stampa log chiari nella console con il nuovo sistema di scheduling:
 
 ```
 🚀 Binance Trading Monitor + Discord Integration
@@ -164,16 +212,49 @@ Il programma stampa log chiari nella console:
 📊 Simboli: 101
 ⏰ Timeframes: 5m, 15m, 30m, 37m, 1h, 2h, 3h, 1d
 🔔 Canali Discord configurati: 8
-⏱️  Intervallo di aggiornamento: 10s
+⏱️  Intervallo loop principale: 30s
 📈 Indicatori: EMA4, EMA8, SMA22, RSI14
 🎯 Segnali: SETUP_LONG (EMA4 > EMA8), SETUP_SHORT (EMA4 < EMA8)
+
+📅 Intervalli di refresh per timeframe:
+   5m   → ogni 2 minuti
+   15m  → ogni 5 minuti
+   30m  → ogni 10 minuti
+   37m  → ogni 10 minuti
+   1h   → ogni 20 minuti
+   2h   → ogni 30 minuti
+   3h   → ogni 60 minuti
+   1d   → ogni 120 minuti
 ────────────────────────────────────────────────────────
 
-🔄 Scansione di 101 simboli su 8 timeframes (808 combinazioni)...
-[20:43:00] 🟢 BTCUSDT (5m) → SETUP_LONG @ $67,500.32 (RSI 61.23)
-[20:43:02] 🔴 ETHUSDT (1h) → SETUP_SHORT @ $3,420.15 (RSI 42.87)
-[20:43:05] 🟢 BNBUSDT (15m) → SETUP_LONG @ $412.56 (RSI 58.91)
+🔄 Scansione di 101 simboli su 8 timeframes: [5m, 15m, 30m, 37m, 1h, 2h, 3h, 1d]
+   (808 combinazioni)
+[20:00:15] 🟢 BTCUSDT (5m) → SETUP_LONG @ $67,500.32 (RSI 61.23)
+[20:00:18] 🔴 ETHUSDT (1h) → SETUP_SHORT @ $3,420.15 (RSI 42.87)
 ✅ Scansione completata in 8752ms (0 errori)
+
+📅 Prossimi aggiornamenti:
+   5m   → tra 2 minuti
+   15m  → tra 5 minuti
+   30m  → tra 10 minuti
+   37m  → tra 10 minuti
+   1h   → tra 20 minuti
+   2h   → tra 30 minuti
+   3h   → tra 60 minuti
+   1d   → tra 120 minuti
+
+⏭️  Nessun timeframe da aggiornare in questo ciclo
+⏭️  Nessun timeframe da aggiornare in questo ciclo
+
+🔄 Scansione di 101 simboli su 1 timeframes: [5m]
+   (101 combinazioni)
+[20:02:15] 🟢 BNBUSDT (5m) → SETUP_LONG @ $412.56 (RSI 58.91)
+✅ Scansione completata in 3421ms (0 errori)
+
+📅 Prossimi aggiornamenti:
+   5m   → tra 2 minuti
+   15m  → tra 3 minuti
+   ...
 ```
 
 ## 🛡️ Gestione Errori
@@ -212,34 +293,57 @@ npm run dev
 CTRL+C
 ```
 
-## ⚡ Performance
+## ⚡ Performance e Rate Limiting
 
-Con le impostazioni di default:
+### ✅ Sistema di Scheduling Intelligente
 
-- **101 simboli** × **8 timeframes** = **808 combinazioni**
-- **Intervallo 10s** → 6 scansioni/minuto
-- **~4,848 richieste API/minuto** (potrebbe superare i limiti!)
+Con il nuovo sistema, **ogni timeframe viene aggiornato solo quando necessario**, riducendo drasticamente le richieste API:
+
+**Configurazione di default:**
+- **101 simboli**
+- **8 timeframes** con intervalli diversificati
+- **Loop principale**: ogni 30 secondi
+
+### Calcolo Richieste API (Caso Reale)
+
+Invece di 808 richieste ogni ciclo, il sistema distribuisce le richieste nel tempo:
+
+```
+PRIMO CICLO (t=0):
+- Tutti i timeframes: 101 × 8 = 808 richieste
+
+CICLI SUCCESSIVI (esempio su 1 ora):
+- t=2min:  5m                → 101 richieste
+- t=4min:  5m                → 101 richieste
+- t=5min:  5m, 15m           → 202 richieste
+- t=6min:  5m                → 101 richieste
+- t=8min:  5m                → 101 richieste
+- t=10min: 5m, 15m, 30m, 37m → 404 richieste
+- t=12min: 5m                → 101 richieste
+- ...e così via
+
+MEDIA RICHIESTE/MINUTO ≈ 250-400 richieste ✅
+```
+
+**Molto sotto il limite Binance di 1,200 req/min!**
+
+### Distribuzione Carico nel Tempo
+
+| Timeframe | Intervallo | Richieste/ora | Richieste/min |
+|-----------|------------|---------------|---------------|
+| 5m | 2 min | 30 × 101 = 3,030 | ~50 |
+| 15m | 5 min | 12 × 101 = 1,212 | ~20 |
+| 30m | 10 min | 6 × 101 = 606 | ~10 |
+| 37m | 10 min | 6 × 101 = 606 | ~10 |
+| 1h | 20 min | 3 × 101 = 303 | ~5 |
+| 2h | 30 min | 2 × 101 = 202 | ~3 |
+| 3h | 60 min | 1 × 101 = 101 | ~2 |
+| 1d | 120 min | 0.5 × 101 = ~50 | ~1 |
+| **TOTALE** | | **~6,110/ora** | **~100/min** ✅ |
+
+**Risorse Sistema:**
 - **Memoria**: ~100-200MB RAM
-- **CPU**: Medio impatto
-
-### ⚠️ IMPORTANTE: Rate Limiting
-
-Con 808 combinazioni ogni 10s, potresti superare il limite Binance. Considera:
-
-1. **Aumentare REFRESH_INTERVAL_MS**: es. 30000 (30s) → ~1,600 req/min ✅
-2. **Ridurre simboli**: Monitora solo i più importanti (es. 30 simboli)
-3. **Ridurre timeframes**: Rimuovi alcuni timeframes meno importanti
-4. **Usare Binance weight-based caching**: Implementa cache locale
-
-### Calcolo Richieste
-
-```
-Richieste/minuto = (Simboli × Timeframes × 60) / REFRESH_INTERVAL_MS * 1000
-
-Esempio con 101 simboli, 8 timeframes, 30s interval:
-= (101 × 8 × 60) / 30000 × 1000
-= 1,616 req/min ✅ (sotto limite 1200 con margine)
-```
+- **CPU**: Basso-Medio impatto (picchi durante le scansioni)
 
 ## 🔧 Troubleshooting
 
@@ -256,10 +360,32 @@ Esempio con 101 simboli, 8 timeframes, 30s interval:
 
 ### Rate limit errors (429 Too Many Requests)
 
-- **CRITICO**: Aumenta `REFRESH_INTERVAL_MS` a 30000 o 60000
-- Riduci il numero di simboli in `SYMBOLS` (es. 30-50)
-- Rimuovi alcuni timeframes da `DISCORD_WEBHOOKS`
-- Verifica di non avere altri script che usano l'API Binance
+Con il sistema di scheduling intelligente, **questo problema non dovrebbe verificarsi**. Se accade:
+
+- Verifica di non avere altri script che usano l'API Binance contemporaneamente
+- Aumenta gli intervalli in `TIMEFRAME_INTERVALS` (es. raddoppia tutti i valori)
+- Riduci il numero di simboli in `SYMBOLS` se necessario
+- Controlla i log per vedere quali timeframes causano il problema
+
+### Personalizzare gli intervalli di refresh
+
+Puoi modificare `TIMEFRAME_INTERVALS` in base alle tue esigenze:
+
+```javascript
+// Esempio: refresh più frequenti
+const TIMEFRAME_INTERVALS = {
+  '5m': 1 * 60 * 1000,    // 1 minuto (più frequente)
+  '15m': 3 * 60 * 1000,   // 3 minuti
+  // ...
+};
+
+// Esempio: refresh più lenti (meno richieste API)
+const TIMEFRAME_INTERVALS = {
+  '5m': 5 * 60 * 1000,    // 5 minuti
+  '15m': 10 * 60 * 1000,  // 10 minuti
+  // ...
+};
+```
 
 ### Dati mancanti per alcuni simboli
 
