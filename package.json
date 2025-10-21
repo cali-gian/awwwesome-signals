@@ -1,0 +1,30 @@
+{
+  "name": "binance-trading-monitor",
+  "version": "1.0.0",
+  "description": "Sistema di monitoraggio trading Binance con indicatori tecnici e alert automatici",
+  "type": "module",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js",
+    "dev": "node --watch monitor.js"
+  },
+  "keywords": [
+    "binance",
+    "trading",
+    "crypto",
+    "signals",
+    "technical-indicators",
+    "ema",
+    "rsi",
+    "crossover"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "technicalindicators": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
